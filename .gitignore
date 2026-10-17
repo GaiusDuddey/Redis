@@ -6,3 +6,7 @@ __pycache__/
 *.aof
 *.rdb
 dump.*
+*token*
+*.env
+.env*
+*secret*

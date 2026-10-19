@@ -1,9 +1,18 @@
 from miniredis.commands.registry import command, wrong_args
-from miniredis.commands.util import ERR_NOT_INT, ERR_SYNTAX, compute_deadline, parse_int
-from miniredis.resp import NULL_BULK, OK, PONG, encode_bulk, encode_error
+from miniredis.commands.util import (
+    ERR_NOT_INT,
+    ERR_SYNTAX,
+    INT64_MAX,
+    INT64_MIN,
+    compute_deadline,
+    fetch,
+    parse_int,
+)
+from miniredis.resp import NULL_BULK, OK, PONG, encode_bulk, encode_error, encode_integer
 from miniredis.store import Store
 
 ERR_BAD_EXPIRE = encode_error("ERR invalid expire time in 'set' command")
+ERR_OVERFLOW = encode_error("ERR increment or decrement would overflow")
 
 
 @command("PING", -1)
@@ -76,5 +85,50 @@ def set_(store: Store, args: list[bytes]) -> bytes:
 
 @command("GET", 2)
 def get(store: Store, args: list[bytes]) -> bytes:
-    value = store.get(args[1])
+    value, err = fetch(store, args[1], bytes)
+    if err:
+        return err
     return NULL_BULK if value is None else encode_bulk(value)
+
+
+def _incr(store: Store, key: bytes, delta: int) -> bytes:
+    value, err = fetch(store, key, bytes)
+    if err:
+        return err
+    if value is None:
+        current = 0
+    else:
+        current = parse_int(value)
+        if current is None:
+            return ERR_NOT_INT
+    new = current + delta
+    if new > INT64_MAX or new < INT64_MIN:
+        return ERR_OVERFLOW
+    store.put(key, str(new).encode())  # put() keeps the key's TTL, like real Redis
+    return encode_integer(new)
+
+
+@command("INCR", 2)
+def incr(store: Store, args: list[bytes]) -> bytes:
+    return _incr(store, args[1], 1)
+
+
+@command("DECR", 2)
+def decr(store: Store, args: list[bytes]) -> bytes:
+    return _incr(store, args[1], -1)
+
+
+@command("INCRBY", 3)
+def incrby(store: Store, args: list[bytes]) -> bytes:
+    n = parse_int(args[2])
+    if n is None:
+        return ERR_NOT_INT
+    return _incr(store, args[1], n)
+
+
+@command("DECRBY", 3)
+def decrby(store: Store, args: list[bytes]) -> bytes:
+    n = parse_int(args[2])
+    if n is None:
+        return ERR_NOT_INT
+    return _incr(store, args[1], -n)

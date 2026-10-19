@@ -26,3 +26,60 @@ def compute_deadline(now_ms: int, delta_ms: int) -> int | None:
     if deadline > INT64_MAX or deadline < INT64_MIN:
         return None
     return deadline
+
+
+ERR_WRONGTYPE = encode_error(
+    "WRONGTYPE Operation against a key holding the wrong kind of value"
+)
+ERR_NOT_FLOAT = encode_error("ERR value is not a valid float")
+
+
+def fetch(store, key: bytes, kind):
+    """Look up key and check its type.
+    Returns (value, None) on success (value is None if the key is missing),
+    or (None, error_reply) if the key holds a different type."""
+    value = store.lookup(key)
+    if value is None:
+        return None, None
+    if not isinstance(value, kind):
+        return None, ERR_WRONGTYPE
+    return value, None
+
+
+def parse_float(raw: bytes) -> float | None:
+    """Strict-ish float parse: accepts inf/-inf, rejects nan, spaces and underscores."""
+    if b"_" in raw or raw != raw.strip():
+        return None
+    try:
+        f = float(raw)
+    except ValueError:
+        return None
+    if f != f:  # nan
+        return None
+    return f
+
+
+def format_score(score: float) -> bytes:
+    if score == float("inf"):
+        return b"inf"
+    if score == float("-inf"):
+        return b"-inf"
+    if score.is_integer() and abs(score) < 1e17:
+        return str(int(score)).encode()
+    return repr(score).encode()
+
+
+def normalize_range(start: int, stop: int, length: int) -> tuple[int, int] | None:
+    """Redis LRANGE/ZRANGE index rules: negatives count from the end, out-of-range
+    is clamped. Returns inclusive (start, stop), or None for an empty range."""
+    if start < 0:
+        start += length
+    if stop < 0:
+        stop += length
+    if start < 0:
+        start = 0
+    if start > stop or start >= length:
+        return None
+    if stop >= length:
+        stop = length - 1
+    return start, stop

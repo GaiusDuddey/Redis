@@ -1,6 +1,8 @@
+import fnmatch
+
 from miniredis.commands.registry import command
 from miniredis.commands.util import ERR_NOT_INT, compute_deadline, parse_int
-from miniredis.resp import encode_error, encode_integer
+from miniredis.resp import encode_array, encode_bulk, encode_error, encode_integer, encode_simple
 from miniredis.store import Store
 
 
@@ -19,6 +21,19 @@ def exists(store: Store, args: list[bytes]) -> bytes:
 def dbsize(store: Store, args: list[bytes]) -> bytes:
     # Like real Redis, includes expired keys that haven't been removed yet.
     return encode_integer(len(store))
+
+
+@command("TYPE", 2)
+def type_(store: Store, args: list[bytes]) -> bytes:
+    return encode_simple(store.type_name(args[1]))
+
+
+@command("KEYS", 2)
+def keys(store: Store, args: list[bytes]) -> bytes:
+    # fnmatch glob: * ? [abc] [!abc]. Real Redis uses [^abc] and backslash escapes.
+    pattern = args[1]
+    matched = [k for k in store.keys() if fnmatch.fnmatchcase(k, pattern)]
+    return encode_array([encode_bulk(k) for k in matched])
 
 
 def _expire(store: Store, args: list[bytes], unit_ms: int, name: str) -> bytes:

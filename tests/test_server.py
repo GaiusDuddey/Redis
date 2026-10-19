@@ -166,3 +166,62 @@ def test_expire_and_persist(client):
     assert client.persist("k") is True
     assert client.ttl("k") == -1
     assert client.expire("missing", 10) is False
+
+
+def test_lists(client):
+    assert client.lpush("l", "a", "b", "c") == 3
+    assert client.rpush("l", "x") == 4
+    assert client.lrange("l", 0, -1) == ["c", "b", "a", "x"]
+    assert client.lpop("l") == "c"
+    assert client.rpop("l") == "x"
+    assert client.llen("l") == 2
+
+
+def test_hashes(client):
+    assert client.hset("h", "a", "1") == 1
+    assert client.hset("h", mapping={"b": "2", "c": "3"}) == 2
+    assert client.hget("h", "b") == "2"
+    assert client.hgetall("h") == {"a": "1", "b": "2", "c": "3"}
+    assert client.hdel("h", "a") == 1
+    assert client.hlen("h") == 2
+
+
+def test_sets(client):
+    assert client.sadd("s", "a", "b", "c") == 3
+    assert client.smembers("s") == {"a", "b", "c"}
+    assert client.sismember("s", "a")
+    assert not client.sismember("s", "z")
+    assert client.srem("s", "a") == 1
+    assert client.scard("s") == 2
+
+
+def test_sorted_sets(client):
+    assert client.zadd("z", {"a": 1, "b": 2, "c": 3}) == 3
+    assert client.zrange("z", 0, -1) == ["a", "b", "c"]
+    assert client.zrange("z", 0, -1, withscores=True) == [("a", 1.0), ("b", 2.0), ("c", 3.0)]
+    assert client.zrank("z", "c") == 2
+    assert client.zrem("z", "b") == 1
+    assert client.zscore("z", "a") == 1.0
+
+
+def test_incr_and_decr(client):
+    assert client.incr("n") == 1
+    assert client.incr("n", 5) == 6
+    assert client.decr("n") == 5
+    assert client.get("n") == "5"
+
+
+def test_keys_and_type(client):
+    client.set("a1", "x")
+    client.set("a2", "x")
+    client.rpush("b1", "x")
+    assert sorted(client.keys("a*")) == ["a1", "a2"]
+    assert client.type("a1") == "string"
+    assert client.type("b1") == "list"
+    assert client.type("nope") == "none"
+
+
+def test_wrongtype_error(client):
+    client.rpush("l", "x")
+    with pytest.raises(redis.ResponseError, match="WRONGTYPE"):
+        client.get("l")

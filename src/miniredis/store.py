@@ -1,13 +1,19 @@
-"""Keyspace with TTL metadata. Keys and values are bytes (binary-safe, like real Redis).
+"""Keyspace with TTL metadata. Keys are bytes (binary-safe, like real Redis).
+
+A value is one of:
+  bytes  -> string      deque -> list      dict -> hash
+  set    -> set         ZSet  -> sorted set
 
 Expiry model: a key's deadline is an absolute unix time in milliseconds, kept in a
 separate dict. Keys are expired lazily here (on every access) and actively by
 expiry.py (background sampling), so keys that are never read again don't leak memory.
 """
 import time
+from collections import deque
 from typing import Callable
 
 from miniredis.datastructures.randomset import RandomSet
+from miniredis.datastructures.zset import ZSet
 
 
 def wall_clock_ms() -> int:
@@ -16,7 +22,7 @@ def wall_clock_ms() -> int:
 
 class Store:
     def __init__(self, clock_ms: Callable[[], int] = wall_clock_ms) -> None:
-        self._data: dict[bytes, bytes] = {}
+        self._data: dict[bytes, object] = {}
         self._expires: dict[bytes, int] = {}  # key -> absolute deadline (ms)
         self._ttl_keys = RandomSet()  # same keys as _expires, for O(1) sampling
         self._clock_ms = clock_ms
@@ -59,9 +65,41 @@ class Store:
     def sample_ttl_keys(self, n: int) -> list[bytes]:
         return self._ttl_keys.sample(n)
 
-    # ---- keyspace operations --------------------------------------------
+    # ---- generic value access -------------------------------------------
 
-    def get(self, key: bytes) -> bytes | None:
+    def lookup(self, key: bytes):
+        """The value stored at key (any type), or None. Applies lazy expiry."""
+        if self.expire_if_needed(key):
+            return None
+        return self._data.get(key)
+
+    def put(self, key: bytes, value) -> None:
+        """Store a value but keep the key's existing TTL (used by INCR, LPUSH, ...)."""
+        self._data[key] = value
+
+    def type_name(self, key: bytes) -> str:
+        value = self.lookup(key)
+        if value is None:
+            return "none"
+        if isinstance(value, bytes):
+            return "string"
+        if isinstance(value, deque):
+            return "list"
+        if isinstance(value, dict):
+            return "hash"
+        if isinstance(value, set):
+            return "set"
+        if isinstance(value, ZSet):
+            return "zset"
+        return "none"
+
+    def keys(self) -> list[bytes]:
+        """All live keys. O(n): this is why real Redis tells you to use SCAN instead."""
+        return [k for k in list(self._data) if not self.expire_if_needed(k)]
+
+    # ---- string / keyspace operations -----------------------------------
+
+    def get(self, key: bytes):
         if self.expire_if_needed(key):
             return None
         return self._data.get(key)
@@ -69,7 +107,7 @@ class Store:
     def set(
         self,
         key: bytes,
-        value: bytes,
+        value,
         expire_at_ms: int | None = None,
         keep_ttl: bool = False,
     ) -> None:

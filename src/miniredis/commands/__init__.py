@@ -1,2 +1,2 @@
 # Importing these modules runs their @command decorators and registers handlers.
-from . import connection, keys, strings  # noqa: F401
+from . import connection, hashes, keys, lists, sets, strings, zsets  # noqa: F401

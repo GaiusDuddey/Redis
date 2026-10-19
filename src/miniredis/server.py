@@ -1,10 +1,12 @@
 """asyncio TCP server. One thread, one event loop: commands never run in parallel,
-so every command is atomic and no locks are needed."""
+so every command is atomic and no locks are needed. The active-expiry cycle runs
+on the same loop, so it can never interleave with a command either."""
 import asyncio
 import logging
 
 import miniredis.commands  # noqa: F401  (registers command handlers)
 from miniredis.commands.registry import dispatch
+from miniredis.expiry import expiry_loop
 from miniredis.resp import ProtocolError, RespParser, encode_error
 from miniredis.store import Store
 
@@ -17,6 +19,7 @@ class Server:
         self.port = port
         self.store = Store()
         self._server: asyncio.Server | None = None
+        self._expiry_task: asyncio.Task | None = None
         self._writers: set[asyncio.StreamWriter] = set()
 
     async def handle_client(
@@ -63,6 +66,7 @@ class Server:
             self.handle_client, self.host, self.port
         )
         self.port = self._server.sockets[0].getsockname()[1]
+        self._expiry_task = asyncio.create_task(expiry_loop(self.store))
 
     async def serve_forever(self) -> None:
         await self.start()
@@ -71,6 +75,13 @@ class Server:
             await self._server.serve_forever()
 
     async def stop(self) -> None:
+        if self._expiry_task is not None:
+            self._expiry_task.cancel()
+            try:
+                await self._expiry_task
+            except asyncio.CancelledError:
+                pass
+            self._expiry_task = None
         if self._server is None:
             return
         self._server.close()

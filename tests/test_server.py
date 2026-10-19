@@ -143,3 +143,26 @@ def test_command_split_across_tcp_packets(server_port):
         assert s.recv(100) == b"+OK\r\n"
         s.sendall(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n")
         assert s.recv(100) == b"$1\r\nv\r\n"
+
+
+def test_set_ex_and_ttl(client):
+    assert client.set("k", "v", ex=100) is True
+    assert 98 <= client.ttl("k") <= 100
+    assert client.pttl("k") > 90_000
+
+
+def test_key_expires_in_real_time(client):
+    client.set("k", "v", px=150)
+    assert client.get("k") == "v"
+    time.sleep(0.3)
+    assert client.get("k") is None
+    assert client.ttl("k") == -2
+
+
+def test_expire_and_persist(client):
+    client.set("k", "v")
+    assert client.ttl("k") == -1
+    assert client.expire("k", 100) is True
+    assert client.persist("k") is True
+    assert client.ttl("k") == -1
+    assert client.expire("missing", 10) is False

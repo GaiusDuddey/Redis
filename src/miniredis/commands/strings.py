@@ -1,6 +1,9 @@
 from miniredis.commands.registry import command, wrong_args
-from miniredis.resp import NULL_BULK, OK, PONG, encode_bulk
+from miniredis.commands.util import ERR_NOT_INT, ERR_SYNTAX, compute_deadline, parse_int
+from miniredis.resp import NULL_BULK, OK, PONG, encode_bulk, encode_error
 from miniredis.store import Store
+
+ERR_BAD_EXPIRE = encode_error("ERR invalid expire time in 'set' command")
 
 
 @command("PING", -1)
@@ -23,9 +26,51 @@ def client(store: Store, args: list[bytes]) -> bytes:
     return OK
 
 
-@command("SET", 3)
+@command("SET", -3)
 def set_(store: Store, args: list[bytes]) -> bytes:
-    store.set(args[1], args[2])
+    """SET key value [EX seconds | PX milliseconds | KEEPTTL] [NX | XX]"""
+    key, value = args[1], args[2]
+    expire_ms = None  # relative TTL in ms
+    nx = xx = keep_ttl = False
+
+    i = 3
+    while i < len(args):
+        opt = args[i].upper()
+        if opt == b"NX":
+            nx = True
+        elif opt == b"XX":
+            xx = True
+        elif opt == b"KEEPTTL":
+            keep_ttl = True
+        elif opt in (b"EX", b"PX"):
+            if expire_ms is not None or i + 1 >= len(args):
+                return ERR_SYNTAX
+            n = parse_int(args[i + 1])
+            if n is None:
+                return ERR_NOT_INT
+            if n <= 0:
+                return ERR_BAD_EXPIRE
+            expire_ms = n * 1000 if opt == b"EX" else n
+            i += 1
+        else:
+            return ERR_SYNTAX
+        i += 1
+
+    if (nx and xx) or (keep_ttl and expire_ms is not None):
+        return ERR_SYNTAX
+
+    deadline = None
+    if expire_ms is not None:
+        deadline = compute_deadline(store.now_ms(), expire_ms)
+        if deadline is None:
+            return ERR_BAD_EXPIRE
+
+    if nx and store.exists(key):
+        return NULL_BULK
+    if xx and not store.exists(key):
+        return NULL_BULK
+
+    store.set(key, value, expire_at_ms=deadline, keep_ttl=keep_ttl)
     return OK
 
 

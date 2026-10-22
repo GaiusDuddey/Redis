@@ -15,8 +15,15 @@ class RespParser:
     until the rest of its bytes show up.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, strict: bool = False) -> None:
         self._buf = bytearray()
+        # strict: only RESP arrays are accepted, no inline commands (used for AOF replay)
+        self._strict = strict
+
+    @property
+    def buffered(self) -> int:
+        """Bytes received but not yet consumed (the start of an incomplete command)."""
+        return len(self._buf)
 
     def feed(self, data: bytes) -> None:
         self._buf.extend(data)
@@ -36,6 +43,8 @@ class RespParser:
 
         # Inline command (e.g. typed via telnet): "SET a b\r\n"
         if buf[0:1] != b"*":
+            if self._strict:
+                raise ProtocolError("expected '*'")
             end = buf.find(b"\r\n")
             if end == -1:
                 if len(buf) > MAX_INLINE_LEN:
@@ -112,3 +121,12 @@ def encode_bulk(value: bytes | None) -> bytes:
 def encode_array(encoded_items: list[bytes]) -> bytes:
     """Items must already be encoded."""
     return b"*%d\r\n%s" % (len(encoded_items), b"".join(encoded_items))
+
+
+def encode_command(args) -> bytes:
+    """A command as the client would send it: an array of bulk strings.
+    The AOF stores commands in exactly this format."""
+    parts = [b"*%d\r\n" % len(args)]
+    for a in args:
+        parts.append(b"$%d\r\n%s\r\n" % (len(a), a))
+    return b"".join(parts)

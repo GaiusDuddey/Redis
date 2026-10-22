@@ -10,7 +10,7 @@ expiry.py (background sampling), so keys that are never read again don't leak me
 """
 import time
 from collections import deque
-from typing import Callable
+from typing import Callable, Iterator
 
 from miniredis.datastructures.randomset import RandomSet
 from miniredis.datastructures.zset import ZSet
@@ -27,6 +27,13 @@ class Store:
         self._ttl_keys = RandomSet()  # same keys as _expires, for O(1) sampling
         self._clock_ms = clock_ms
         self.expired_keys = 0
+        # While True (AOF replay) nothing expires, so replayed commands see exactly
+        # the state the original run saw. Keys expire normally once loading is done.
+        self.loading = False
+        # Called with the key whenever a key expires. Persistence uses it to log a DEL.
+        self.on_expire: Callable[[bytes], None] | None = None
+        # Set by the server. Gives SAVE / BGREWRITEAOF access to the persistence layer.
+        self.persistence = None
 
     def __len__(self) -> int:
         """Number of keys in memory, including expired ones not yet removed."""
@@ -43,11 +50,15 @@ class Store:
     def expire_if_needed(self, key: bytes) -> bool:
         """Lazy expiration. Removes the key if its deadline passed.
         Returns True if the key was expired (and is now gone)."""
+        if self.loading:
+            return False
         deadline = self._expires.get(key)
         if deadline is None or self._clock_ms() <= deadline:
             return False
         self._remove(key)
         self.expired_keys += 1
+        if self.on_expire is not None:
+            self.on_expire(key)
         return True
 
     def _remove(self, key: bytes) -> None:
@@ -64,6 +75,10 @@ class Store:
 
     def sample_ttl_keys(self, n: int) -> list[bytes]:
         return self._ttl_keys.sample(n)
+
+    def deadline_ms(self, key: bytes) -> int | None:
+        """Raw absolute deadline of a key (no expiry check), or None if it has no TTL."""
+        return self._expires.get(key)
 
     # ---- generic value access -------------------------------------------
 
@@ -96,6 +111,25 @@ class Store:
     def keys(self) -> list[bytes]:
         """All live keys. O(n): this is why real Redis tells you to use SCAN instead."""
         return [k for k in list(self._data) if not self.expire_if_needed(k)]
+
+    def iter_live(self) -> Iterator[tuple[bytes, object, int | None]]:
+        """(key, value, deadline_ms or None) for every key that has not expired.
+        Read-only: never removes keys and never triggers on_expire. Used by snapshots
+        and AOF rewrite."""
+        now = self._clock_ms()
+        for key, value in list(self._data.items()):
+            deadline = self._expires.get(key)
+            if deadline is not None and deadline < now:
+                continue
+            yield key, value, deadline
+
+    def restore(self, key: bytes, value, deadline_ms: int | None = None) -> None:
+        """Insert a value with an exact deadline (snapshot loading)."""
+        self._data[key] = value
+        if deadline_ms is None:
+            self._clear_ttl(key)
+        else:
+            self._set_ttl(key, deadline_ms)
 
     # ---- string / keyspace operations -----------------------------------
 

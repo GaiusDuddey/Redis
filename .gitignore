@@ -10,3 +10,5 @@ dump.*
 *.env
 .env*
 *secret*
+data/
+*.tmp

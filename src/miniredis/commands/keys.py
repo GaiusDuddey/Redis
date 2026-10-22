@@ -80,3 +80,21 @@ def pttl(store: Store, args: list[bytes]) -> bytes:
 @command("PERSIST", 2)
 def persist(store: Store, args: list[bytes]) -> bytes:
     return encode_integer(1 if store.persist(args[1]) else 0)
+
+
+@command("PEXPIREAT", 3)
+def pexpireat(store: Store, args: list[bytes]) -> bytes:
+    """Absolute-time expiry. The AOF logs every TTL in this form."""
+    deadline = parse_int(args[2])
+    if deadline is None:
+        return ERR_NOT_INT
+    key = args[1]
+    if not store.exists(key):
+        return encode_integer(0)
+    # While loading the AOF, a deadline in the past must not delete the key: later
+    # commands in the log were written when the key was still alive.
+    if deadline <= store.now_ms() and not store.loading:
+        store.delete(key)
+        return encode_integer(1)
+    store.set_expire(key, deadline)
+    return encode_integer(1)
